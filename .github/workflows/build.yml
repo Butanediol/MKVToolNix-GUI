@@ -1,0 +1,121 @@
+name: Build MKVToolNix GUI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Set up Homebrew
+      uses: Homebrew/actions/setup-homebrew@master
+      
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install boost docbook-xsl gettext nlohmann-json pkg-config utf8cpp flac fmt gmp libebml libmatroska libogg libvorbis pugixml qt autoconf automake libtool cmark
+        
+    - name: Clone and prepare source
+      run: |
+        # Clone mkvtoolnix source
+        git clone https://codeberg.org/mbunkus/mkvtoolnix.git
+        cd mkvtoolnix
+        
+        # Generate configure script
+        ./autogen.sh
+        
+    - name: Configure with GUI enabled
+      run: |
+        cd mkvtoolnix
+        
+        # Set up environment variables
+        export CXXFLAGS="-std=c++17 -I$(brew --prefix fmt)/include"
+        export LDFLAGS="-L$(brew --prefix fmt)/lib"
+        export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix fmt)/lib/pkgconfig:$(brew --prefix cmark)/lib/pkgconfig"
+        
+        # Configure with GUI enabled
+        ./configure \
+          --enable-gui \
+          --with-boost=$(brew --prefix boost) \
+          --with-docbook-xsl-root=$(brew --prefix docbook-xsl)/docbook-xsl \
+          --with-extra-includes="$(brew --prefix flac)/include:$(brew --prefix gmp)/include:$(brew --prefix libebml)/include:$(brew --prefix libmatroska)/include:$(brew --prefix libogg)/include:$(brew --prefix libvorbis)/include:$(brew --prefix utf8cpp)/include:$(brew --prefix fmt)/include:$(brew --prefix cmark)/include" \
+          --with-extra-libs="$(brew --prefix flac)/lib:$(brew --prefix gmp)/lib:$(brew --prefix libebml)/lib:$(brew --prefix libmatroska)/lib:$(brew --prefix libogg)/lib:$(brew --prefix libvorbis)/lib:$(brew --prefix fmt)/lib:$(brew --prefix cmark)/lib" \
+          --prefix=/usr/local
+        
+    - name: Build
+      run: |
+        cd mkvtoolnix
+        
+        # Ensure proper environment for build
+        export CXXFLAGS="-std=c++17 -I$(brew --prefix fmt)/include"
+        export LDFLAGS="-L$(brew --prefix fmt)/lib"
+        export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix fmt)/lib/pkgconfig"
+        
+        # Use rake as shown in the formula
+        rake -j$(sysctl -n hw.ncpu)
+        
+    - name: Install
+      run: |
+        cd mkvtoolnix
+        rake install
+        
+    - name: Verify installation
+      run: |
+        which mkvtoolnix-gui || echo "GUI executable not found"
+        ls -la /usr/local/bin/mkvtoolnix-gui || echo "GUI executable not in expected location"
+        
+    - name: Create .app bundle
+      run: |
+        # Create app bundle structure
+        mkdir -p "MKVToolNix-GUI.app/Contents/MacOS"
+        mkdir -p "MKVToolNix-GUI.app/Contents/Resources"
+        
+        # Find and copy GUI executable
+        GUI_EXEC=$(find /usr/local -name "mkvtoolnix-gui" -type f -executable | head -1)
+        if [ -z "$GUI_EXEC" ]; then
+          echo "Error: mkvtoolnix-gui executable not found"
+          exit 1
+        fi
+        cp "$GUI_EXEC" "MKVToolNix-GUI.app/Contents/MacOS/"
+        
+        # Create Info.plist
+        cat > "MKVToolNix-GUI.app/Contents/Info.plist" << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>mkvtoolnix-gui</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.bunkus.mkvtoolnix-gui</string>
+            <key>CFBundleName</key>
+            <string>MKVToolNix GUI</string>
+            <key>CFBundleVersion</key>
+            <string>94.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>94.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+        </dict>
+        </plist>
+        EOF
+        
+    - name: Create DMG
+      run: |
+        hdiutil create -volname "MKVToolNix GUI" -srcfolder "MKVToolNix-GUI.app" -ov -format UDZO "MKVToolNix-GUI.dmg"
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: MKVToolNix-GUI
+        path: MKVToolNix-GUI.dmg
